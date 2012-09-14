@@ -38,6 +38,13 @@ class View implements ArrayAccess {
 	public static $names = array();
 
 	/**
+	 * The cache content of loaded view files.
+	 *
+	 * @var array
+	 */
+	public static $cache = array();
+
+	/**
 	 * The Laravel view loader event name.
 	 *
 	 * @var string
@@ -103,13 +110,19 @@ class View implements ArrayAccess {
 	}
 
 	/**
-	 * Get the path to a given view on disk.
+	 * Determine if the given view exists.
 	 *
-	 * @param  string  $view
-	 * @return string
+	 * @param  string       $view
+	 * @param  boolean      $return_path
+	 * @return string|bool
 	 */
-	protected function path($view)
+	public static function exists($view, $return_path = false)
 	{
+		if (starts_with($view, 'name: ') and array_key_exists($name = substr($view, 6), static::$names))
+		{
+			$view = static::$names[$name];
+		}
+		
 		list($bundle, $view) = Bundle::parse($view);
 
 		$view = str_replace('.', '/', $view);
@@ -117,9 +130,25 @@ class View implements ArrayAccess {
 		// We delegate the determination of view paths to the view loader event
 		// so that the developer is free to override and manage the loading
 		// of views in any way they see fit for their application.
-		$path = Event::first(static::loader, array($bundle, $view));
+		$path = Event::until(static::loader, array($bundle, $view));
 
 		if ( ! is_null($path))
+		{
+			return $return_path ? $path : true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Get the path to a given view on disk.
+	 *
+	 * @param  string  $view
+	 * @return string
+	 */
+	protected function path($view)
+	{
+		if ($path = $this->exists($view,true))
 		{
 			return $path;
 		}
@@ -139,7 +168,7 @@ class View implements ArrayAccess {
 	{
 		$directory = str_finish($directory, DS);
 
-		// Views may have either the default PHP file extension of the "Blade"
+		// Views may have either the default PHP file extension or the "Blade"
 		// extension, so we will need to check for both in the view path
 		// and return the first one we find for the given view.
 		if (file_exists($path = $directory.$view.EXT))
@@ -226,13 +255,18 @@ class View implements ArrayAccess {
 	 *		});
 	 * </code>
 	 *
-	 * @param  string   $view
-	 * @param  Closure  $composer
+	 * @param  string|array  $views
+	 * @param  Closure       $composer
 	 * @return void
 	 */
-	public static function composer($view, $composer)
+	public static function composer($views, $composer)
 	{
-		Event::listen("laravel.composing: {$view}", $composer);
+		$views = (array) $views;
+
+		foreach ($views as $view)
+		{
+			Event::listen("laravel.composing: {$view}", $composer);
+		}
 	}
 
 	/**
@@ -262,7 +296,7 @@ class View implements ArrayAccess {
 		}
 
 		// If there is no data in the array, we will render the contents of
-		// the "empty" view. Alternative, the "empty view" can be a raw
+		// the "empty" view. Alternatively, the "empty view" can be a raw
 		// string that is prefixed with "raw|" for convenience.
 		else
 		{
@@ -286,21 +320,16 @@ class View implements ArrayAccess {
 	 */
 	public function render()
 	{
-		// To allow bundles or other pieces of the application to modify the
-		// view before it is rendered, we'll fire an event, passing in the
-		// view instance so it can modified.
-		$composer = "laravel.composing: {$this->view}";
-
-		Event::fire($composer, array($this));
+		Event::fire("laravel.composing: {$this->view}", array($this));
 
 		// If there are listeners to the view engine event, we'll pass them
 		// the view so they can render it according to their needs, which
 		// allows easy attachment of other view parsers.
 		if (Event::listeners(static::engine))
 		{
-			$result = Event::first(static::engine, array($this));
+			$result = Event::until(static::engine, array($this));
 
-			if ($result !== false) return $result;
+			if ( ! is_null($result)) return $result;
 		}
 
 		return $this->get();
@@ -315,6 +344,11 @@ class View implements ArrayAccess {
 	{
 		$__data = $this->data();
 
+		// The contents of each view file is cached in an array for the
+		// request since partial views may be rendered inside of for
+		// loops which could incur performance penalties.
+		$__contents = $this->load();
+
 		ob_start() and extract($__data, EXTR_SKIP);
 
 		// We'll include the view contents for parsing within a catcher
@@ -322,18 +356,35 @@ class View implements ArrayAccess {
 		// will throw it out to the exception handler.
 		try
 		{
-			include $this->path;
+			eval('?>'.$__contents);
 		}
 
 		// If we caught an exception, we'll silently flush the output
 		// buffer so that no partially rendered views get thrown out
-		// to the client and confuse the user.
+		// to the client and confuse the user with junk.
 		catch (\Exception $e)
 		{
 			ob_get_clean(); throw $e;
 		}
 
 		return ob_get_clean();
+	}
+
+	/**
+	 * Get the contents of the view file from disk.
+	 *
+	 * @return string
+	 */
+	protected function load()
+	{
+		if (isset(static::$cache[$this->path]))
+		{
+			return static::$cache[$this->path];
+		}
+		else
+		{
+			return static::$cache[$this->path] = file_get_contents($this->path);
+		}
 	}
 
 	/**
@@ -498,6 +549,22 @@ class View implements ArrayAccess {
 	public function __toString()
 	{
 		return $this->render();
+	}
+
+	/**
+	 * Magic Method for handling dynamic functions.
+	 *
+	 * This method handles calls to dynamic with helpers.
+	 */
+	public function __call($method, $parameters)
+	{
+		if (strpos($method, 'with_') === 0)
+		{
+			$key = substr($method, 5);
+			return $this->with($key, $parameters[0]);
+		}
+
+		throw new \Exception("Method [$method] is not defined on the View class.");
 	}
 
 }

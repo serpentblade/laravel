@@ -6,9 +6,10 @@ class Error {
 	 * Handle an exception and display the exception report.
 	 *
 	 * @param  Exception  $exception
+	 * @param  bool       $trace
 	 * @return void
 	 */
-	public static function exception($exception)
+	public static function exception($exception, $trace = true)
 	{
 		static::log($exception);
 
@@ -23,9 +24,14 @@ class Error {
 				  <h3>Message:</h3>
 				  <pre>".$exception->getMessage()."</pre>
 				  <h3>Location:</h3>
-				  <pre>".$exception->getFile()." on line ".$exception->getLine()."</pre>
+				  <pre>".$exception->getFile()." on line ".$exception->getLine()."</pre>";
+
+			if ($trace)
+			{
+				echo "
 				  <h3>Stack Trace:</h3>
 				  <pre>".$exception->getTraceAsString()."</pre></html>";
+			}
 		}
 
 		// If we're not using detailed error messages, we'll use the event
@@ -35,7 +41,7 @@ class Error {
 		{
 			$response = Event::first('500');
 
-			return Response::prepare($response)->send();
+			echo Response::prepare($response)->render();
 		}
 
 		exit(1);
@@ -54,7 +60,7 @@ class Error {
 	{
 		if (error_reporting() === 0) return;
 
-		// For a PHP error, we'll create an ErrorExcepetion and then feed that
+		// For a PHP error, we'll create an ErrorException and then feed that
 		// exception to the exception method, which will create a simple view
 		// of the exception details for the developer.
 		$exception = new \ErrorException($error, $code, 0, $file, $line);
@@ -62,8 +68,6 @@ class Error {
 		if (in_array($code, Config::get('error.ignore')))
 		{
 			return static::log($exception);
-
-			return true;
 		}
 
 		static::exception($exception);
@@ -76,7 +80,7 @@ class Error {
 	 */
 	public static function shutdown()
 	{
-		// If a fatal error occured that we have not handled yet, we will
+		// If a fatal error occurred that we have not handled yet, we will
 		// create an ErrorException and feed it to the exception handler,
 		// as it will not yet have been handled.
 		$error = error_get_last();
@@ -85,7 +89,7 @@ class Error {
 		{
 			extract($error, EXTR_SKIP);
 
-			static::exception(new \ErrorException($message, $type, 0, $file, $line));
+			static::exception(new \ErrorException($message, $type, 0, $file, $line), false);
 		}
 	}
 
